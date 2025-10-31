@@ -68,16 +68,51 @@ const CONTRACT_ABI = [
   "error InvalidBeneficiary()"
 ];
 
+// Type definitions for FHE SDK
+interface FheInstance {
+  createEncryptedInput: (contractAddress: string, userAddress: string) => EncryptedInput;
+  getPublicKey: () => string | Uint8Array | { publicKey?: Uint8Array; key?: string | Uint8Array };
+}
+
+interface EncryptedInput {
+  add64: (value: bigint) => void;
+  encrypt: () => Promise<EncryptedData>;
+}
+
+interface EncryptedData {
+  handles: string[];
+  inputProof: Uint8Array;
+}
+
+interface FheConfig {
+  network: unknown;
+  contractAddress: string;
+  gatewayUrl: string;
+}
+
+interface FheModule {
+  initSDK: () => Promise<void>;
+  createInstance: (config: FheConfig) => Promise<FheInstance>;
+  SepoliaConfig: Record<string, unknown>;
+}
+
+interface LogEntry {
+  time: string;
+  type: string;
+  msg: string;
+  txHash?: string;
+}
+
 function App() {
   // State management
   const [activeTab, setActiveTab] = useState<'user' | 'owner'>('user');
   const [account, setAccount] = useState('');
   const [isConnected, setIsConnected] = useState(false);
-  const [fheInstance, setFheInstance] = useState<any>(null);
+  const [fheInstance, setFheInstance] = useState<FheInstance | null>(null);
   const [fhePublicKey, setFhePublicKey] = useState<string>('');
   const [fheStatus, setFheStatus] = useState('Not initialized');
   const [contract, setContract] = useState<ethers.Contract | null>(null);
-  const [logs, setLogs] = useState<any[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
 
   // Auction data state
   const [auctionData, setAuctionData] = useState({
@@ -152,8 +187,9 @@ function App() {
             method: 'wallet_switchEthereumChain',
             params: [{ chainId: `0x${SEPOLIA_CHAIN_ID.toString(16)}` }],
           });
-        } catch (switchError: any) {
-          addLog('error', switchError.message || 'Failed to switch network');
+        } catch (switchError) {
+          const error = switchError as Error;
+          addLog('error', error.message || 'Failed to switch network');
           return;
         }
       }
@@ -166,8 +202,9 @@ function App() {
       setContract(contractInstance);
       
       addLog('success', `Connected: ${accounts[0].slice(0, 6)}...${accounts[0].slice(-4)}`);
-    } catch (error: any) {
-      addLog('error', error.message);
+    } catch (error) {
+      const err = error as Error;
+      addLog('error', err.message);
     }
   };
 
@@ -183,7 +220,7 @@ function App() {
         new Promise((_, reject) => 
           setTimeout(() => reject(new Error('SDK load timeout')), 30000)
         )
-      ]);
+      ]) as FheModule;
 
       const { initSDK, createInstance, SepoliaConfig } = FheSDKModule;
       
@@ -196,7 +233,7 @@ function App() {
       ]);
 
       addLog('pending', 'Creating FHE instance...');
-      const config = { 
+      const config: FheConfig = { 
         ...SepoliaConfig, 
         network: window.ethereum,
         contractAddress: CONTRACT_ADDRESS,
@@ -208,7 +245,7 @@ function App() {
         new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Instance creation timeout')), 30000)
         )
-      ]);
+      ]) as FheInstance;
       
       addLog('info', 'Extracting FHE public key...');
       const publicKey = instance.getPublicKey();
@@ -218,11 +255,11 @@ function App() {
         fullPublicKeyHex = publicKey.startsWith('0x') ? publicKey : '0x' + publicKey;
       } else if (publicKey instanceof Uint8Array) {
         fullPublicKeyHex = ethers.hexlify(publicKey);
-      } else if (typeof publicKey === 'object' && publicKey.publicKey instanceof Uint8Array) {
+      } else if (typeof publicKey === 'object' && 'publicKey' in publicKey && publicKey.publicKey instanceof Uint8Array) {
         fullPublicKeyHex = ethers.hexlify(publicKey.publicKey);
-      } else if (typeof publicKey === 'object' && publicKey.key) {
+      } else if (typeof publicKey === 'object' && 'key' in publicKey && publicKey.key) {
         const keyValue = publicKey.key;
-        fullPublicKeyHex = (typeof keyValue === 'string' && keyValue.startsWith('0x')) ? keyValue : ethers.hexlify(keyValue);
+        fullPublicKeyHex = (typeof keyValue === 'string' && keyValue.startsWith('0x')) ? keyValue : ethers.hexlify(keyValue as Uint8Array);
       } else {
         throw new Error(`Invalid public key format: ${typeof publicKey}`);
       }
@@ -242,9 +279,10 @@ function App() {
       addLog('success', `FHE SDK initialized successfully`);
       addLog('info', `Public Key Hash (bytes32): ${publicKeyBytes32.slice(0, 20)}...${publicKeyBytes32.slice(-10)}`);
       
-    } catch (error: any) {
+    } catch (error) {
+      const err = error as Error;
       setFheStatus('Failed');
-      addLog('error', `FHE initialization failed: ${error.message}`);
+      addLog('error', `FHE initialization failed: ${err.message}`);
       console.error('Full error:', error);
     }
   };
@@ -312,7 +350,7 @@ function App() {
       const bidders = await contract.getRoundBidders();
       setRoundBidders(bidders);
 
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error fetching auction info:', error);
       addLog('error', 'Failed to fetch auction data');
     }
@@ -334,12 +372,12 @@ function App() {
       setBeneficiaryAddr(beneficiary);
       setFeeCollectorAddr(feeCollector);
       setTotalFees(ethers.formatEther(fees));
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error fetching owner info:', error);
     }
   }, [contract]);
 
-  // Submit encrypted bid - FIXED VERSION
+  // Submit encrypted bid
  const handleSubmitBid = async () => {
   if (!contract || !fheInstance || !account || !bidAmount || !depositAmount || !fhePublicKey) {
     addLog('error', '❌ Missing requirements');
@@ -392,11 +430,12 @@ function App() {
     );
     
     addLog('pending', `TX: ${tx.hash}`);
-    const receipt = await tx.wait();
+    await tx.wait();
     addLog('success', `✅ Success with Approach 5!`, tx.hash);
     
-  } catch (error: any) {
-    addLog('error', `❌ Approach 5 failed: ${error.message}`);
+  } catch (error) {
+    const err = error as Error;
+    addLog('error', `❌ Approach 5 failed: ${err.message}`);
   } finally {
     setIsSubmitting(false);
   }
@@ -417,12 +456,13 @@ function App() {
       const tx = await contract.cancelBid();
       addLog('pending', `Transaction submitted: ${tx.hash}`);
       
-      const receipt = await tx.wait();
+      await tx.wait();
       addLog('success', `Bid cancelled successfully!`, tx.hash);
       
       fetchAuctionInfo();
-    } catch (error: any) {
-      addLog('error', error.message || 'Failed to cancel bid');
+    } catch (error) {
+      const err = error as Error;
+      addLog('error', err.message || 'Failed to cancel bid');
     } finally {
       setIsSubmitting(false);
     }
@@ -442,12 +482,13 @@ function App() {
       const tx = await contract.claimRefund();
       addLog('pending', `Transaction submitted: ${tx.hash}`);
       
-      const receipt = await tx.wait();
+      await tx.wait();
       addLog('success', `Refund claimed successfully!`, tx.hash);
       
       fetchAuctionInfo();
-    } catch (error: any) {
-      addLog('error', error.message || 'Failed to claim refund');
+    } catch (error) {
+      const err = error as Error;
+      addLog('error', err.message || 'Failed to claim refund');
     } finally {
       setIsSubmitting(false);
     }
@@ -464,13 +505,14 @@ function App() {
       const tx = await contract.requestFinalize({ gasLimit: BigInt(5000000) });
       addLog('pending', `Transaction submitted: ${tx.hash}`);
       
-      const receipt = await tx.wait();
+      await tx.wait();
       addLog('success', `Finalization requested successfully!`, tx.hash);
       
       setDecryptionStatus('PROCESSING');
       fetchAuctionInfo();
-    } catch (error: any) {
-      addLog('error', error.message || 'Failed to request finalization');
+    } catch (error) {
+      const err = error as Error;
+      addLog('error', err.message || 'Failed to request finalization');
     } finally {
       setIsSubmitting(false);
     }
@@ -486,12 +528,13 @@ function App() {
       const tx = await contract.pauseAuction();
       addLog('pending', `Transaction submitted: ${tx.hash}`);
       
-      const receipt = await tx.wait();
+      await tx.wait();
       addLog('success', `Auction paused successfully!`, tx.hash);
       
       setIsPaused(true);
-    } catch (error: any) {
-      addLog('error', error.message || 'Failed to pause auction');
+    } catch (error) {
+      const err = error as Error;
+      addLog('error', err.message || 'Failed to pause auction');
     } finally {
       setIsSubmitting(false);
     }
@@ -507,12 +550,13 @@ function App() {
       const tx = await contract.unpauseAuction();
       addLog('pending', `Transaction submitted: ${tx.hash}`);
       
-      const receipt = await tx.wait();
+      await tx.wait();
       addLog('success', `Auction unpaused successfully!`, tx.hash);
       
       setIsPaused(false);
-    } catch (error: any) {
-      addLog('error', error.message || 'Failed to unpause auction');
+    } catch (error) {
+      const err = error as Error;
+      addLog('error', err.message || 'Failed to unpause auction');
     } finally {
       setIsSubmitting(false);
     }
@@ -528,13 +572,14 @@ function App() {
       const tx = await contract.updateBeneficiary(newBeneficiary);
       addLog('pending', `Transaction submitted: ${tx.hash}`);
       
-      const receipt = await tx.wait();
+      await tx.wait();
       addLog('success', `Beneficiary updated successfully!`, tx.hash);
       
       setBeneficiaryAddr(newBeneficiary);
       setNewBeneficiary('');
-    } catch (error: any) {
-      addLog('error', error.message || 'Failed to update beneficiary');
+    } catch (error) {
+      const err = error as Error;
+      addLog('error', err.message || 'Failed to update beneficiary');
     } finally {
       setIsSubmitting(false);
     }
@@ -550,13 +595,14 @@ function App() {
       const tx = await contract.updateFeeCollector(newFeeCollector);
       addLog('pending', `Transaction submitted: ${tx.hash}`);
       
-      const receipt = await tx.wait();
+      await tx.wait();
       addLog('success', `Fee collector updated successfully!`, tx.hash);
       
       setFeeCollectorAddr(newFeeCollector);
       setNewFeeCollector('');
-    } catch (error: any) {
-      addLog('error', error.message || 'Failed to update fee collector');
+    } catch (error) {
+      const err = error as Error;
+      addLog('error', err.message || 'Failed to update fee collector');
     } finally {
       setIsSubmitting(false);
     }
@@ -572,12 +618,13 @@ function App() {
       const tx = await contract.withdrawPlatformFees();
       addLog('pending', `Transaction submitted: ${tx.hash}`);
       
-      const receipt = await tx.wait();
+      await tx.wait();
       addLog('success', `Platform fees withdrawn successfully!`, tx.hash);
       
       setTotalFees('0');
-    } catch (error: any) {
-      addLog('error', error.message || 'Failed to withdraw fees');
+    } catch (error) {
+      const err = error as Error;
+      addLog('error', err.message || 'Failed to withdraw fees');
     } finally {
       setIsSubmitting(false);
     }
@@ -597,13 +644,14 @@ function App() {
       const tx = await contract.transferOwnership(newOwner);
       addLog('pending', `Transaction submitted: ${tx.hash}`);
       
-      const receipt = await tx.wait();
+      await tx.wait();
       addLog('success', `Ownership transferred successfully!`, tx.hash);
       
       setContractOwner(newOwner);
       setNewOwner('');
-    } catch (error: any) {
-      addLog('error', error.message || 'Failed to transfer ownership');
+    } catch (error) {
+      const err = error as Error;
+      addLog('error', err.message || 'Failed to transfer ownership');
     } finally {
       setIsSubmitting(false);
     }
@@ -611,220 +659,241 @@ function App() {
 
   // Effects
   useEffect(() => {
-    if (isConnected) {
+    if (contract && isConnected) {
       fetchAuctionInfo();
       fetchOwnerInfo();
       const interval = setInterval(() => {
         fetchAuctionInfo();
-        if (activeTab === 'owner') {
-          fetchOwnerInfo();
-        }
+        fetchOwnerInfo();
       }, 5000);
       return () => clearInterval(interval);
     }
-  }, [isConnected, activeTab, fetchAuctionInfo, fetchOwnerInfo]);
+  }, [contract, isConnected, fetchAuctionInfo, fetchOwnerInfo]);
 
-  // Computed values
-  const isFinalizationReady = auctionData.state === 'ENDED' && auctionData.validBidders > 0;
+  useEffect(() => {
+    if (window.ethereum) {
+      window.ethereum.on('accountsChanged', () => {
+        window.location.reload();
+      });
+      window.ethereum.on('chainChanged', () => {
+        window.location.reload();
+      });
+    }
+  }, []);
+
+  const isFinalizationReady = auctionData.state === 'ENDED' && decryptionStatus === 'IDLE';
 
   return (
-    <div className="app">
+    <div className="container">
       {/* Header */}
       <div className="header">
-        <div className="header-title">
-          <span className="title-main">FHE AUCTION</span>
-          <span className="title-sub">[SYSTEM ONLINE] FHE AUCTION by ZAMA</span>
+        <div className="title">
+          <span className="icon">🔐</span>
+          <span>FHE SEALED BID AUCTION</span>
         </div>
         <div className="header-info">
-          <div>CONTRACT: {CONTRACT_ADDRESS.slice(0, 6)}...{CONTRACT_ADDRESS.slice(-4)}</div>
-          <div>NETWORK: SEPOLIA</div>
-          <div>ROUND: #{auctionData.round}</div>
+          <div className="info-label">[ROUND #{auctionData.round}]</div>
+          <div className={`badge badge-${auctionData.state.toLowerCase()}`}>
+            {auctionData.state}
+          </div>
         </div>
-        {!isConnected ? (
-          <button className="btn-connect" onClick={connectWallet}>
-            CONNECT WALLET
+      </div>
+
+      {/* Wallet Connection */}
+      {!isConnected ? (
+        <div className="panel glow">
+          <div className="panel-header">&gt; &gt; CONNECT WALLET</div>
+          <button className="btn" onClick={connectWallet}>
+            CONNECT METAMASK
           </button>
-        ) : (
-          <div className="account">
-            <span className="badge">CONNECTED</span>
-            <span>{account.slice(0, 6)}...{account.slice(-4)}</span>
+          <div className="info-item" style={{ marginTop: '1rem' }}>
+            <div className="info-label">[NETWORK REQUIREMENT]</div>
+            <div>Sepolia Testnet</div>
           </div>
-        )}
-      </div>
-
-      {/* Auction Status Panel */}
-      <div className="panel glow">
-        <div className="panel-header">&gt; AUCTION STATUS</div>
-        <div className="auction-stats">
-          <div className="stat">
-            <div className="stat-label">STATE</div>
-            <div className={`stat-value ${auctionData.state === 'ACTIVE' ? 'active' : auctionData.state === 'ENDED' ? 'ended' : ''}`}>
-              {auctionData.state}
+        </div>
+      ) : (
+        <div className="panel">
+          <div className="panel-header">&gt; WALLET STATUS</div>
+          <div className="info-item">
+            <div className="info-label">[ADDRESS]</div>
+            <div style={{ fontSize: '0.85rem', wordBreak: 'break-all' }}>
+              {account.slice(0, 6)}...{account.slice(-4)}
             </div>
           </div>
-          <div className="stat">
-            <div className="stat-label">BIDDERS</div>
-            <div className="stat-value">{auctionData.validBidders}/50</div>
-          </div>
-          <div className="stat">
-            <div className="stat-label">TIME LEFT</div>
-            <div className="stat-value countdown">{auctionData.timeRemaining}</div>
-          </div>
-          <div className="stat">
-            <div className="stat-label">END BLOCK</div>
-            <div className="stat-value">#{auctionData.endBlock}</div>
-          </div>
-        </div>
-        <div className="progress-bar">
-          <div className="progress-fill" style={{ width: `${auctionData.progress}%` }}></div>
-        </div>
-        <div className="info-item">
-          <div className="info-label">[MINIMUM DEPOSIT INCREMENT]</div>
-          <div className="info-value">{auctionData.minIncrement}</div>
-        </div>
-        <div className="info-item">
-          <div className="info-label">[ESTIMATED END TIME]</div>
-          <div className="info-value" style={{ fontSize: '0.9rem' }}>
-            {auctionData.estimatedEndTime || 'Calculating...'}
-          </div>
-        </div>
-        <div className="info-item">
-          <div className="info-label">[CURRENT LEADER]</div>
-          <div className="info-value encrypted">{auctionData.currentLeader === 'None' ? 'NONE' : `${auctionData.currentLeader.slice(0, 6)}...${auctionData.currentLeader.slice(-4)}`}</div>
-        </div>
-      </div>
-
-      {/* Tab Navigation */}
-      <div className="tab-nav">
-        <button 
-          className={`tab ${activeTab === 'user' ? 'active' : ''}`} 
-          onClick={() => setActiveTab('user')}
-        >
-          USER PANEL
-        </button>
-        <button 
-          className={`tab ${activeTab === 'owner' ? 'active' : ''} ${isOwner ? 'owner-tab' : ''}`} 
-          onClick={() => setActiveTab('owner')}
-          disabled={!isOwner}
-        >
-          OWNER PANEL {isOwner && <span className="badge">ADMIN</span>}
-        </button>
-      </div>
-
-      {/* User Panel */}
-      {activeTab === 'user' ? (
-        <div>
-          {/* FHE Status Panel */}
-          <div className="panel">
-            <div className="panel-header">&gt; FHE ENCRYPTION STATUS</div>
-            <div className="info-item">
-              <div className="info-label">[FHE SDK STATUS]</div>
-              <div className={`badge ${fheStatus === 'Ready' ? '' : 'badge-encrypted'}`}>
-                {fheStatus}
-              </div>
+          <div className="info-item">
+            <div className="info-label">[FHE SDK STATUS]</div>
+            <div className={`badge ${fheStatus === 'Ready' ? 'badge-active' : fheStatus === 'Failed' ? 'badge-ended' : ''}`}>
+              {fheStatus}
             </div>
-            <div className="info-item">
-              <div className="info-label">[FHE PUBLIC KEY]</div>
-              <div style={{ fontSize: '0.8rem', wordBreak: 'break-all' }}>
-                {fhePublicKey ? `${fhePublicKey.slice(0, 20)}...${fhePublicKey.slice(-10)}` : 'Not initialized'}
-              </div>
-            </div>
+          </div>
+          {fheStatus !== 'Ready' && (
             <button 
               className="btn" 
               onClick={initFHE} 
-              disabled={fheStatus === 'Ready' || fheStatus === 'Initializing...'}
-              style={{ width: '100%' }}
+              disabled={fheStatus === 'Initializing...'}
             >
-              {fheStatus === 'Ready' ? '✓ FHE READY' : fheStatus === 'Initializing...' ? 'INITIALIZING...' : 'INITIALIZE FHE SDK'}
+              {fheStatus === 'Initializing...' ? 'INITIALIZING...' : 'INITIALIZE FHE SDK'}
             </button>
+          )}
+        </div>
+      )}
+
+      {/* Tab Navigation */}
+      {isConnected && (
+        <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+          <button 
+            className={`btn ${activeTab === 'user' ? '' : 'btn-secondary'}`}
+            onClick={() => setActiveTab('user')}
+          >
+            USER INTERFACE
+          </button>
+          {isOwner && (
+            <button 
+              className={`btn ${activeTab === 'owner' ? '' : 'btn-secondary'}`}
+              onClick={() => setActiveTab('owner')}
+              style={{ borderColor: 'var(--pink)', color: 'var(--pink)' }}
+            >
+              OWNER PANEL
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Main Content */}
+      {activeTab === 'user' ? (
+        <div>
+          {/* Auction Info */}
+          <div className="panel glow">
+            <div className="panel-header">&gt; &gt; AUCTION INFORMATION</div>
+            <div className="info-item">
+              <div className="info-label">[TIME REMAINING]</div>
+              <div className="info-value">{auctionData.timeRemaining}</div>
+            </div>
+            <div className="info-item">
+              <div className="info-label">[BLOCK PROGRESS]</div>
+              <div style={{ marginTop: '0.5rem' }}>
+                <div className="progress-bar">
+                  <div className="progress-fill" style={{ width: `${auctionData.progress}%` }} />
+                </div>
+                <div style={{ textAlign: 'center', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+                  Block {auctionData.currentBlock} / {auctionData.endBlock} ({auctionData.progress.toFixed(1)}%)
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div className="info-item">
+                <div className="info-label">[CURRENT LEADER]</div>
+                <div style={{ fontSize: '0.75rem' }}>
+                  {auctionData.currentLeader === 'None' ? 'None' : 
+                    `${auctionData.currentLeader.slice(0, 6)}...${auctionData.currentLeader.slice(-4)}`}
+                </div>
+              </div>
+              <div className="info-item">
+                <div className="info-label">[TOTAL BIDDERS]</div>
+                <div className="info-value">{auctionData.validBidders}</div>
+              </div>
+            </div>
+            <div className="info-item">
+              <div className="info-label">[ESTIMATED END TIME]</div>
+              <div style={{ fontSize: '0.8rem' }}>{auctionData.estimatedEndTime || 'Calculating...'}</div>
+            </div>
           </div>
 
-          {/* Place Bid Panel */}
-          <div className="panel glow">
-            <div className="panel-header">&gt; PLACE ENCRYPTED BID</div>
-            <div className="info-item">
-              <div className="info-label">[YOUR STATUS]</div>
-              {bidderInfo.hasBidded ? (
-                <span className="badge">BID PLACED</span>
-              ) : bidderInfo.cancelled ? (
-                <span className="badge badge-encrypted">CANCELLED</span>
-              ) : (
-                <span className="badge badge-encrypted">NO BID</span>
-              )}
-            </div>
-            {bidderInfo.hasBidded && (
+          {/* Your Bid Status */}
+          <div className="panel">
+            <div className="panel-header">&gt; YOUR BID STATUS</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
               <div className="info-item">
                 <div className="info-label">[YOUR DEPOSIT]</div>
-                <div className="info-value">{bidderInfo.deposit} ETH</div>
+                <div className="info-value">{parseFloat(bidderInfo.deposit).toFixed(4)} ETH</div>
               </div>
-            )}
-            {!bidderInfo.hasBidded && !bidderInfo.cancelled && (
-              <>
-                <input
-                  type="number"
-                  className="input"
-                  placeholder="Bid Amount (ETH)"
-                  value={bidAmount}
-                  onChange={(e) => setBidAmount(e.target.value)}
-                  disabled={auctionData.state !== 'ACTIVE'}
-                  step="0.0001"
-                />
-                <input
-                  type="number"
-                  className="input"
-                  placeholder="Deposit Amount (ETH)"
-                  value={depositAmount}
-                  onChange={(e) => setDepositAmount(e.target.value)}
-                  disabled={auctionData.state !== 'ACTIVE'}
-                  step="0.0001"
-                />
-                <button
-                  className="btn btn-primary"
-                  onClick={handleSubmitBid}
-                  disabled={
-                    !isConnected || 
-                    auctionData.state !== 'ACTIVE' || 
-                    fheStatus !== 'Ready' || 
-                    isSubmitting ||
-                    !bidAmount ||
-                    !depositAmount
-                  }
-                >
-                  {isSubmitting ? 'ENCRYPTING & SUBMITTING...' : 'SUBMIT ENCRYPTED BID'}
-                </button>
-              </>
-            )}
-            {bidderInfo.hasBidded && auctionData.state === 'ACTIVE' && (
-              <button className="btn btn-red" onClick={handleCancelBid} disabled={isSubmitting}>
-                CANCEL BID
-              </button>
-            )}
-            <div style={{ marginTop: '0.5rem', padding: '0.5rem', border: '1px solid var(--green-dark)', fontSize: '0.75rem' }}>
-              [INFO] Deposit must exceed current max: {ethers.formatEther(auctionData.maxDepositWei)} ETH
+              <div className="info-item">
+                <div className="info-label">[BID STATUS]</div>
+                <div className={`badge ${bidderInfo.hasBidded ? 'badge-encrypted' : ''}`}>
+                  {bidderInfo.cancelled ? '❌ CANCELLED' : 
+                   bidderInfo.hasBidded ? '🔒 PLACED' : 
+                   '⚪ NO BID'}
+                </div>
+              </div>
+            </div>
+            <div className="info-item">
+              <div className="info-label">[PENDING REFUND]</div>
+              <div className="info-value">{parseFloat(pendingRefund).toFixed(4)} ETH</div>
             </div>
           </div>
 
-          {/* Refunds Panel */}
-          {parseFloat(pendingRefund) > 0 && (
-            <div className="panel">
-              <div className="panel-header">&gt; PENDING REFUNDS</div>
+          {/* Bid Placement */}
+          {fheStatus === 'Ready' && auctionData.state === 'ACTIVE' && (
+            <div className="panel glow">
+              <div className="panel-header">&gt; &gt; PLACE ENCRYPTED BID</div>
               <div className="info-item">
-                <div className="info-label">[REFUND AVAILABLE]</div>
-                <div className="info-value">{pendingRefund} ETH</div>
+                <div className="info-label">[YOUR BID AMOUNT (ETH)]</div>
+                <input 
+                  className="input" 
+                  type="number" 
+                  step="0.000000001"
+                  placeholder="0.001"
+                  value={bidAmount}
+                  onChange={(e) => setBidAmount(e.target.value)}
+                  disabled={bidderInfo.hasBidded || isSubmitting}
+                />
               </div>
-              <button className="btn" onClick={handleClaimRefund} disabled={isSubmitting}>
-                CLAIM REFUND
+              <div className="info-item">
+                <div className="info-label">[DEPOSIT AMOUNT (ETH)]</div>
+                <input 
+                  className="input" 
+                  type="number" 
+                  step="0.01"
+                  placeholder="Minimum deposit"
+                  value={depositAmount}
+                  onChange={(e) => setDepositAmount(e.target.value)}
+                  disabled={bidderInfo.hasBidded || isSubmitting}
+                />
+                <div style={{ fontSize: '0.75rem', marginTop: '0.5rem', color: 'var(--green-dark)' }}>
+                  Min deposit: {auctionData.minIncrement}
+                </div>
+              </div>
+              <button 
+                className="btn" 
+                onClick={handleSubmitBid}
+                disabled={!bidAmount || !depositAmount || bidderInfo.hasBidded || isSubmitting}
+              >
+                {isSubmitting ? 'SUBMITTING...' : 'SUBMIT ENCRYPTED BID'}
               </button>
+              <div style={{ marginTop: '0.5rem', padding: '0.5rem', border: '1px solid var(--green)', fontSize: '0.75rem' }}>
+                [INFO] Your bid will be encrypted using FHE before submission. Only the winner will be revealed after the auction ends.
+              </div>
             </div>
           )}
 
-          {/* Current Round Bidders */}
+          {/* Actions */}
           <div className="panel">
-            <div className="panel-header">&gt; CURRENT ROUND BIDDERS [{roundBidders.length}/50]</div>
+            <div className="panel-header">&gt; BIDDER ACTIONS</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <button 
+                className="btn btn-red" 
+                onClick={handleCancelBid}
+                disabled={!bidderInfo.hasBidded || bidderInfo.cancelled || isSubmitting}
+              >
+                CANCEL BID
+              </button>
+              <button 
+                className="btn" 
+                onClick={handleClaimRefund}
+                disabled={parseFloat(pendingRefund) === 0 || isSubmitting}
+              >
+                CLAIM REFUND
+              </button>
+            </div>
+          </div>
+
+          {/* Round Bidders List */}
+          <div className="panel">
+            <div className="panel-header">&gt; CURRENT ROUND BIDDERS [{roundBidders.length}]</div>
             {roundBidders.length === 0 ? (
               <div className="empty">[NO BIDDERS YET]</div>
             ) : (
-              <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+              <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
                 {roundBidders.map((bidder, i) => (
                   <div key={i} style={{ padding: '0.5rem', borderBottom: '1px solid var(--green-dark)', display: 'flex', justifyContent: 'space-between' }}>
                     <span>[{i + 1}] {bidder.slice(0, 6)}...{bidder.slice(-4)}</span>
@@ -868,7 +937,7 @@ function App() {
               <button 
                 className="btn" 
                 onClick={handleRequestFinalize}
-                disabled={!isFinalizationReady || decryptionStatus === 'PROCESSING'}
+                disabled={auctionData.state !== 'ENDED' || decryptionStatus !== 'IDLE'}
                 style={{ 
                   borderColor: isFinalizationReady ? 'var(--green)' : 'var(--green-dark)',
                   color: isFinalizationReady ? 'var(--green)' : 'var(--green-dark)'
