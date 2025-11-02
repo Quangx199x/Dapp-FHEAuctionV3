@@ -423,7 +423,7 @@ function App() {
   };
 
   const handleRequestFinalize = async () => {
-    if (!contract || !isOwner) return;
+    if (!contract) return;
     try {
       setIsSubmitting(true);
       addLog('pending', 'Requesting finalization...');
@@ -773,6 +773,32 @@ function App() {
             )}
           </div>
 
+          {/* Finalization Panel - Show when auction ended */}
+          {(auctionData.currentBlock >= auctionData.endBlock || auctionData.state === 'ENDED') && (
+            <div className="panel glow">
+              <div className="panel-header">&gt; &gt; FINALIZATION</div>
+              <div className="info-row">
+                <span className="info-label">[AUCTION STATUS]</span>
+                <span className="badge badge-ended">AUCTION ENDED - READY TO FINALIZE</span>
+              </div>
+              <button 
+                className="btn btn-primary" 
+                onClick={handleRequestFinalize}
+                disabled={decryptionStatus !== 'IDLE' || isSubmitting}
+                style={{
+                  borderColor: decryptionStatus === 'IDLE' ? 'var(--cyan)' : 'var(--green-dark)',
+                  color: decryptionStatus === 'IDLE' ? 'var(--cyan)' : 'var(--green-dark)'
+                }}
+                title={decryptionStatus === 'IDLE' ? 'Click to request finalization and reveal winner' : 'Finalization already in progress'}
+              >
+                {isSubmitting ? 'REQUESTING...' : 'REQUEST FINALIZE'}
+              </button>
+              <div className="control-note" style={{ borderColor: 'var(--cyan)', color: 'var(--cyan)' }}>
+                [INFO] Anyone can trigger finalization when auction ends. The winner will be revealed on-chain.
+              </div>
+            </div>
+          )}
+
           {/* Round Bidders */}
           <div className="panel">
             <div className="panel-header">&gt; CURRENT ROUND BIDDERS [{roundBidders.length}]</div>
@@ -819,12 +845,12 @@ function App() {
               <button 
                 className="btn btn-finalize" 
                 onClick={handleRequestFinalize}
-                disabled={auctionData.state !== 'ENDED' || decryptionStatus !== 'IDLE' || isSubmitting}
+                disabled={(auctionData.currentBlock < auctionData.endBlock && auctionData.state !== 'ENDED') || decryptionStatus !== 'IDLE' || isSubmitting}
                 style={{
-                  borderColor: (auctionData.state === 'ENDED' && decryptionStatus === 'IDLE') ? 'var(--green)' : 'var(--green-dark)',
-                  color: (auctionData.state === 'ENDED' && decryptionStatus === 'IDLE') ? 'var(--green)' : 'var(--green-dark)'
+                  borderColor: ((auctionData.currentBlock >= auctionData.endBlock || auctionData.state === 'ENDED') && decryptionStatus === 'IDLE') ? 'var(--green)' : 'var(--green-dark)',
+                  color: ((auctionData.currentBlock >= auctionData.endBlock || auctionData.state === 'ENDED') && decryptionStatus === 'IDLE') ? 'var(--green)' : 'var(--green-dark)'
                 }}
-                title={auctionData.state === 'ENDED' && decryptionStatus === 'IDLE' ? 'Click to finalize auction' : 'Only available when auction ENDED'}
+                title={(auctionData.currentBlock >= auctionData.endBlock || auctionData.state === 'ENDED') && decryptionStatus === 'IDLE' ? 'Click to finalize auction' : 'Only available when auction time ends'}
               >
                 REQUEST FINALIZE
               </button>
@@ -858,7 +884,7 @@ function App() {
             </div>
             
             <div className="control-note">
-              [NOTE] Advanced controls are disabled in this version. Only REQUEST FINALIZE is available when auction ENDED.
+              [NOTE] Advanced controls are disabled in this version. Only REQUEST FINALIZE is available when auction time ends.
             </div>
           </div>
 
